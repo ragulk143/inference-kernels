@@ -331,6 +331,30 @@ Requires a CUDA-capable GPU, PyTorch >= 2.0, Triton >= 2.0.
 cd tests && python3 test_triton_rmsnorm.py       # correctness
 cd benchmark && python3 compare_fused_vs_unfused.py   # performance
 ```
+## Bonus: torch.compile comparison
+
+Tested whether PyTorch's automatic compiler can match hand-written Triton
+fusion, using RMSNorm as the test case:
+
+| Version | Time | Speedup vs naive |
+|---|---|---|
+| Naive PyTorch (uncompiled) | 7.56 ms | 1.0x |
+| Naive PyTorch + torch.compile | 2.05 ms | 3.69x |
+| Hand-written Triton kernel | 2.57 ms | 2.93x |
+
+torch.compile beat my hand-written kernel by about 21%. This is the honest
+and more interesting result: TorchInductor (the backend that generates code
+for torch.compile) automatically traces the operations, fuses them, and
+likely auto-tunes block size configurations more thoroughly than I did by
+hand. For simple, well-understood ops like RMSNorm, the compiler's automatic
+fusion is already strong enough to match or beat manual kernel writing.
+
+This doesn't mean hand-written kernels are pointless -- it means the value
+of manual kernel work shows up more clearly on operations the compiler
+*can't* trace and fuse automatically (custom attention patterns, fused
+multi-step algorithms like Flash Attention, anything involving control flow
+or data-dependent branching). RMSNorm is exactly the kind of simple,
+trace-friendly op where compilers are expected to do well.
 
 ## License
 
