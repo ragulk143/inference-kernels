@@ -229,17 +229,101 @@ bandwidth, Ampere architecture, compute capability 8.6). CUDA 13.0, PyTorch
 
 ## Usage
 
+These kernels are meant to be dropped directly into a transformer model's
+forward pass, replacing the equivalent PyTorch operations. Here's how each
+one fits into real model code — not isolated examples, but the actual
+context where they're used.
+
+### RMSNorm — inside a transformer block
+
 ```python
+import torch
+import torch.nn as nn
 from inference_kernels.triton_rmsnorm import triton_rmsnorm
+
+class TransformerBlock(nn.Module):
+    def __init__(self, dim, n_heads):
+        super().__init__()
+        self.norm_weight = nn.Parameter(torch.ones(dim))
+        self.attn = nn.MultiheadAttention(dim, n_heads, batch_first=True)
+        self.eps = 1e-6
+
+    def forward(self, x):
+        # Normalize before attention -- this replaces nn.LayerNorm(dim)
+        normed = triton_rmsnorm(x, self.norm_weight, self.eps)
+        attn_out, _ = self.attn(normed, normed, normed)
+        return x + attn_out  # residual connection
+```
+
+### SwiGLU — inside a feed-forward block
+
+```python
 from inference_kernels.triton_swiglu import triton_swiglu
+
+class FeedForward(nn.Module):
+    def __init__(self, dim, hidden_dim):
+        super().__init__()
+        self.gate_proj = nn.Linear(dim, hidden_dim, bias=False)
+        self.up_proj = nn.Linear(dim, hidden_dim, bias=False)
+        self.down_proj = nn.Linear(hidden_dim, dim, bias=False)
+
+    def forward(self, x):
+        gate = self.gate_proj(x)
+        up = self.up_proj(x)
+        # This replaces: F.silu(gate) * up
+        activated = triton_swiglu(gate, up)
+        return self.down_proj(activated)
+```
+
+### RoPE — applied to Q/K before attention scores
+
+```python
 from inference_kernels.triton_rope import triton_rope
+
+class Attention(nn.Module):
+    def __init__(self, dim, n_heads, max_seq_len):
+        super().__init__()
+        self.n_heads = n_heads
+        self.head_dim = dim // n_heads
+        self.q_proj = nn.Linear(dim, dim, bias=False)
+        self.k_proj = nn.Linear(dim, dim, bias=False)
+        self.v_proj = nn.Linear(dim, dim, bias=False)
+
+    def forward(self, x):
+        batch, seq_len, dim = x.shape
+        q = self.q_proj(x).view(batch, seq_len, self.n_heads, self.head_dim)
+        k = self.k_proj(x).view(batch, seq_len, self.n_heads, self.head_dim)
+
+        # Apply position information before computing attention scores
+        q = triton_rope(q, seq_len, self.head_dim)
+        k = triton_rope(k, seq_len, self.head_dim)
+
+        v = self.v_proj(x).view(batch, seq_len, self.n_heads, self.head_dim)
+        # ... attention score computation continues with q, k, v
+        return q, k, v
+```
+
+### Softmax — converting attention scores to probabilities
+
+```python
 from inference_kernels.triton_softmax import triton_softmax
 
-out = triton_rmsnorm(x, weight, eps=1e-6)
-out = triton_swiglu(gate, up)
-out = triton_rope(x, seq_len, dim)
-out = triton_softmax(x)
+def attention_scores(q, k, v, scale):
+    # q, k shape: (batch, heads, seq_len, head_dim)
+    scores = torch.matmul(q, k.transpose(-2, -1)) * scale
+    probs = triton_softmax(scores)  # replaces F.softmax(scores, dim=-1)
+    return torch.matmul(probs, v)
 ```
+
+### Installation
+
+```bash
+git clone https://github.com/ragulk143/inference-kernels.git
+cd inference-kernels
+pip install -e .
+```
+
+Requires a CUDA-capable GPU, PyTorch >= 2.0, Triton >= 2.0.
 
 ## Running tests and benchmarks
 
