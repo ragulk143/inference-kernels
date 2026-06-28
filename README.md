@@ -355,7 +355,23 @@ of manual kernel work shows up more clearly on operations the compiler
 multi-step algorithms like Flash Attention, anything involving control flow
 or data-dependent branching). RMSNorm is exactly the kind of simple,
 trace-friendly op where compilers are expected to do well.
+### Verified with Nsight Compute
 
+Profiled rmsnorm_kernel directly on hardware (not estimated):
+
+| Metric | Value |
+|---|---|
+| Memory Throughput | 93.74% |
+| Compute (SM) Throughput | 6.30% |
+| Achieved Occupancy | 95.29% |
+
+This confirms the roofline-based diagnosis with real hardware measurement:
+the kernel is overwhelmingly memory-bound (93.74% memory utilization vs
+6.30% compute utilization), and occupancy was never the bottleneck (95.29%
+achieved, near the 100% theoretical ceiling) -- which is exactly why the
+num_warps tuning experiment showed no improvement. There was no scheduling
+headroom left to exploit; the only lever that would move this number is
+reducing total bytes moved.
 ## License
 
 MIT
