@@ -355,23 +355,39 @@ of manual kernel work shows up more clearly on operations the compiler
 multi-step algorithms like Flash Attention, anything involving control flow
 or data-dependent branching). RMSNorm is exactly the kind of simple,
 trace-friendly op where compilers are expected to do well.
-### Verified with Nsight Compute
+## Verified with Nsight Compute (all four kernels)
 
-Profiled rmsnorm_kernel directly on hardware (not estimated):
+Replaced hand-calculated roofline estimates with real hardware measurement
+using Nsight Compute --set basic, run directly on the RTX 3050.
 
-| Metric | Value |
-|---|---|
-| Memory Throughput | 93.74% |
-| Compute (SM) Throughput | 6.30% |
-| Achieved Occupancy | 95.29% |
+| Kernel | Memory Throughput | Compute (SM) Throughput | Achieved Occupancy |
+|---|---|---|---|
+| RMSNorm | 93.74% | 6.30% | 95.29% |
+| SwiGLU | 94.23% | 6.49% | 79.56% |
+| RoPE | 94.70% | 20.12% | 91.13% |
+| Softmax | 92.99% | 7.72% | 81.58% |
 
-This confirms the roofline-based diagnosis with real hardware measurement:
-the kernel is overwhelmingly memory-bound (93.74% memory utilization vs
-6.30% compute utilization), and occupancy was never the bottleneck (95.29%
-achieved, near the 100% theoretical ceiling) -- which is exactly why the
-num_warps tuning experiment showed no improvement. There was no scheduling
-headroom left to exploit; the only lever that would move this number is
-reducing total bytes moved.
+All four kernels are confirmed memory-bound by direct measurement, each
+sitting in a tight 93-95% memory throughput band, consistently higher than
+the simplified roofline estimates calculated earlier in this README (which
+ranged 44-68%). The gap exists because the simple roofline model (bytes
+moved divided by peak bandwidth) does not account for real hardware effects
+like L2 cache reuse, which let the actual kernels run faster than the naive
+theoretical floor predicted.
+
+RoPE stands out with the highest compute throughput of the four (20.12%,
+versus 6-8% for the others) and the lowest achieved occupancy relative to
+its 100% theoretical ceiling (91.13%). This lines up with RoPE's strided
+internal memory access pattern (discussed above) -- the extra addressing
+math and the access pattern itself keep the SMs measurably busier than the
+other three kernels, even though all four remain solidly memory-bound
+overall.
+
+Softmax's occupancy result is notably different from the other three:
+83.33% theoretical occupancy (not 100%, due to higher shared memory and
+register usage from the row-wise max/sum reduction), achieved at 81.58% --
+the smallest theoretical-to-achieved gap of any kernel here, meaning this
+kernel is scheduling about as efficiently as its own design allows.
 ## License
 
 MIT
